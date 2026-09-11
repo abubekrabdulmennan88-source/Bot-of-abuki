@@ -82,12 +82,44 @@ def fetch_channel_posts(channel: str):
     return posts
 
 
+ERROR_PAGE_MARKERS = (
+    "Error 500", "Server Error", "That's an error",
+    "That’s an error", "please try again later",
+)
+
+
+def _looks_like_error_page(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in ERROR_PAGE_MARKERS)
+
+
 def translate_to_amharic(text: str) -> str:
     if not text or not text.strip():
         return ""
+
     translator = GoogleTranslator(source="auto", target="am")
     chunks = [text[i:i + 4500] for i in range(0, len(text), 4500)]
-    translated_chunks = [translator.translate(c) for c in chunks]
+
+    translated_chunks = []
+    for chunk in chunks:
+        translated = None
+        for attempt in range(3):
+            try:
+                result = translator.translate(chunk)
+                if result and not _looks_like_error_page(result):
+                    translated = result
+                    break
+                log.warning("Translate attempt %d looked like an error page, retrying...", attempt + 1)
+            except Exception as e:
+                log.warning("Translate attempt %d failed: %s", attempt + 1, e)
+            time.sleep(5 * (attempt + 1))
+
+        if translated is None:
+            raise RuntimeError("Translation failed after retries (likely rate-limited)")
+
+        translated_chunks.append(translated)
+        time.sleep(2)
+
     return "".join(translated_chunks)
 
 
@@ -122,15 +154,38 @@ def check_channel(channel: str, last_id: int) -> int:
                 post_to_telegram(translated)
                 time.sleep(3)
             except Exception as e:
-                log.error("Error translating/posting message %s from %s: %s",
-                          msg_id, channel, e)
+                log.error("Error translating/posting message %s from %s: %s "
+                          "(will retry this one next cycle)", msg_id, channel, e)
+                break
         new_last_id = max(new_last_id, msg_id)
 
     return new_last_id
 
 
+def initialize_baseline(state):
+    """On very first run (no state file yet), skip the backlog: mark each
+    channel's current newest post as 'already seen' so we only translate
+    genuinely NEW posts going forward, instead of flooding Google Translate
+    with dozens of requests at once and getting blocked."""
+    changed = False
+    for channel in SOURCE_CHANNELS:
+        if state.get(channel, 0) == 0:
+            try:
+                posts = fetch_channel_posts(channel)
+                if posts:
+                    state[channel] = posts[-1][0]
+                    changed = True
+                    log.info("Baseline set for %s at post id %d", channel, posts[-1][0])
+            except Exception as e:
+                log.error("Could not set baseline for %s: %s", channel, e)
+    if changed:
+        save_state(state)
+    return state
+
+
 def main():
     state = load_state()
+    state = initialize_baseline(state)
     log.info("Bot started. Checking every 5-15 minutes.")
 
     while True:
