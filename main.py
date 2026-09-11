@@ -46,6 +46,46 @@ log = logging.getLogger("dorar-translator")
 
 
 # ----------------------------------------------------------------------
+# Islamic content filter
+# ----------------------------------------------------------------------
+
+# ኢስላማዊ ያልሆኑ/የተከለከሉ ቃላት
+BLOCKED_WORDS = [
+    "እግዚአብሔር",
+    "ኢየሱስ",
+    "ክርስቶስ",
+    "መስቀል",
+    # ተጨማሪ ካሉ አክል
+]
+
+# ቢያንስ አንዱ መኖር ያለበት ኢስላማዊ ቁልፍ ቃላት
+ISLAMIC_KEYWORDS = [
+    "አላህ",
+    "ቁርአን",
+    "ሐዲስ",
+    "ነብዩ",
+    "ሙሐመድ",
+    "ኢስላም",
+    "ሶላት",
+    "ሱረቱ",
+    # ተጨማሪ ካሉ አክል
+]
+
+
+def is_islamic_and_clean(text: str) -> bool:
+    text_lower = text.lower()
+
+    # የተከለከለ ቃል ካለበት ውድቅ
+    for word in BLOCKED_WORDS:
+        if word.lower() in text_lower:
+            return False
+
+    # ቢያንስ አንድ ኢስላማዊ ቃል መኖር አለበት
+    has_islamic_word = any(kw.lower() in text_lower for kw in ISLAMIC_KEYWORDS)
+    return has_islamic_word
+
+
+# ----------------------------------------------------------------------
 # State (yalefut post id lememezgeb, dggami post ledebulet)
 # ----------------------------------------------------------------------
 
@@ -175,7 +215,17 @@ def check_channel(channel: str, last_id: int) -> int:
         if text.strip():
             try:
                 translated = translate_to_amharic(text)
-                post_to_telegram(translated)
+
+                # Yezih tach yalew filter: islamawi keneber, teqebi yalhone
+                # kal(oc) kalayaz bicha yiletefal.
+                if is_islamic_and_clean(translated):
+                    post_to_telegram(translated)
+                else:
+                    log.info(
+                        "Skipped message %s from %s — not Islamic or contains a blocked word.",
+                        msg_id, channel,
+                    )
+
                 time.sleep(3)  # Telegram flood-limit endayagegm
             except Exception as e:
                 log.error("Error translating/posting message %s from %s: %s "
@@ -227,43 +277,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# ኢስላማዊ ያልሆኑ/የተከለከሉ ቃላት
-BLOCKED_WORDS = [
-    "እግዚአብሔር",
-    "ኢየሱስ",
-    "ክርስቶስ",
-    "መስቀል",
-    # ተጨማሪ ካሉ አክል
-]
-
-# ቢያንስ አንዱ መኖር ያለበት ኢስላማዊ ቁልፍ ቃላት
-ISLAMIC_KEYWORDS = [
-    "አላህ",
-    "ቁርአን",
-    "ሐዲስ",
-    "ነብዩ",
-    "ሙሐመድ",
-    "ኢስላም",
-    "ሶላት",
-    "ሱረቱ",
-    # ተጨማሪ ካሉ አክል
-]
-
-def is_islamic_and_clean(text):
-    text_lower = text.lower()
-    
-    # የተከለከለ ቃል ካለበት ውድቅ
-    for word in BLOCKED_WORDS:
-        if word.lower() in text_lower:
-            return False
-    
-    # ቢያንስ አንድ ኢስላማዊ ቃል መኖር አለበት
-    has_islamic_word = any(kw.lower() in text_lower for kw in ISLAMIC_KEYWORDS)
-    
-    return has_islamic_word
-
-# ትርጉሙን ካገኘህ በኋላ፣ ከመለጠፍህ በፊት፦
-if is_islamic_and_clean(translated_text):
-    send_to_channel(translated_text)
-else:
-    print("Post skipped — not Islamic or contains blocked word")
