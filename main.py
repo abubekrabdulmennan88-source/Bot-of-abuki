@@ -3,7 +3,7 @@ Dorar Translator Bot (Session-Free Version)
 --------------------------------------------
 Ke sostu Telegram channelochi (dorarnet_telegram, almunajjid, ArIslamway)
 addis post seyimeta, wede Amarigna yiteregmal, wede @ibnuabbas_hara
-yiለጥፋል.
+yiletefal.
 
 Yihe version session string weyis computer AYFELEGM.
 Manew yemiserew: yehulu public Telegram channel yalew free preview
@@ -19,15 +19,13 @@ import time
 import random
 import logging
 import re
+import threading
+import http.server
 import requests
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 
-# ----------------------------------------------------------------------
-# Config - kezih tach yalut hulu Railway "Variables" wist adergut.
-# ----------------------------------------------------------------------
-
-BOT_TOKEN = os.environ["TARGET_BOT_TOKEN"]            # "Translator Abubeker Abdu" bot token
+BOT_TOKEN = os.environ["TARGET_BOT_TOKEN"]
 TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL", "@ibnuabbas_hara")
 
 SOURCE_CHANNELS = [
@@ -45,20 +43,31 @@ logging.basicConfig(
 log = logging.getLogger("dorar-translator")
 
 
-# ----------------------------------------------------------------------
-# Islamic content filter
-# ----------------------------------------------------------------------
+def _run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
 
-# ኢስላማዊ ያልሆኑ/የተከለከሉ ቃላት
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is running")
+
+        def log_message(self, format, *args):
+            pass
+
+    http.server.HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
+threading.Thread(target=_run_dummy_server, daemon=True).start()
+
+
 BLOCKED_WORDS = [
     "እግዚአብሔር",
     "ኢየሱስ",
     "ክርስቶስ",
     "መስቀል",
-    # ተጨማሪ ካሉ አክል
 ]
 
-# ቢያንስ አንዱ መኖር ያለበት ኢስላማዊ ቁልፍ ቃላት
 ISLAMIC_KEYWORDS = [
     "አላህ",
     "ቁርአን",
@@ -68,26 +77,17 @@ ISLAMIC_KEYWORDS = [
     "ኢስላም",
     "ሶላት",
     "ሱረቱ",
-    # ተጨማሪ ካሉ አክል
 ]
 
 
 def is_islamic_and_clean(text: str) -> bool:
     text_lower = text.lower()
-
-    # የተከለከለ ቃል ካለበት ውድቅ
     for word in BLOCKED_WORDS:
         if word.lower() in text_lower:
             return False
-
-    # ቢያንስ አንድ ኢስላማዊ ቃል መኖር አለበት
     has_islamic_word = any(kw.lower() in text_lower for kw in ISLAMIC_KEYWORDS)
     return has_islamic_word
 
-
-# ----------------------------------------------------------------------
-# State (yalefut post id lememezgeb, dggami post ledebulet)
-# ----------------------------------------------------------------------
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -101,12 +101,7 @@ def save_state(state):
         json.dump(state, f)
 
 
-# ----------------------------------------------------------------------
-# Fetch new posts from a channel's public preview page (no login needed)
-# ----------------------------------------------------------------------
-
 def fetch_channel_posts(channel: str):
-    """Returns list of (message_id, text) tuples from the public t.me/s/ page."""
     url = f"https://t.me/s/{channel}"
     resp = requests.get(url, timeout=15, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -134,13 +129,9 @@ def fetch_channel_posts(channel: str):
     return posts
 
 
-# ----------------------------------------------------------------------
-# Translation (as-is, malef yelem)
-# ----------------------------------------------------------------------
-
 ERROR_PAGE_MARKERS = (
     "Error 500", "Server Error", "That's an error",
-    "That’s an error", "please try again later",
+    "That's an error", "please try again later",
 )
 
 
@@ -168,20 +159,16 @@ def translate_to_amharic(text: str) -> str:
                 log.warning("Translate attempt %d looked like an error page, retrying...", attempt + 1)
             except Exception as e:
                 log.warning("Translate attempt %d failed: %s", attempt + 1, e)
-            time.sleep(5 * (attempt + 1))  # backoff: 5s, 10s, 15s
+            time.sleep(5 * (attempt + 1))
 
         if translated is None:
             raise RuntimeError("Translation failed after retries (likely rate-limited)")
 
         translated_chunks.append(translated)
-        time.sleep(2)  # slow down between chunks so we don't get blocked
+        time.sleep(2)
 
     return "".join(translated_chunks)
 
-
-# ----------------------------------------------------------------------
-# Posting (bemeteqem Bot API)
-# ----------------------------------------------------------------------
 
 def post_to_telegram(text: str):
     if not text.strip():
@@ -196,10 +183,6 @@ def post_to_telegram(text: str):
     else:
         log.info("Posted translated message successfully.")
 
-
-# ----------------------------------------------------------------------
-# Main polling loop
-# ----------------------------------------------------------------------
 
 def check_channel(channel: str, last_id: int) -> int:
     new_last_id = last_id
@@ -216,8 +199,6 @@ def check_channel(channel: str, last_id: int) -> int:
             try:
                 translated = translate_to_amharic(text)
 
-                # Yezih tach yalew filter: islamawi keneber, teqebi yalhone
-                # kal(oc) kalayaz bicha yiletefal.
                 if is_islamic_and_clean(translated):
                     post_to_telegram(translated)
                 else:
@@ -226,21 +207,17 @@ def check_channel(channel: str, last_id: int) -> int:
                         msg_id, channel,
                     )
 
-                time.sleep(3)  # Telegram flood-limit endayagegm
+                time.sleep(3)
             except Exception as e:
                 log.error("Error translating/posting message %s from %s: %s "
                           "(will retry this one next cycle)", msg_id, channel, e)
-                break  # stop here so this message is retried, not skipped
+                break
         new_last_id = max(new_last_id, msg_id)
 
     return new_last_id
 
 
 def initialize_baseline(state):
-    """On very first run (no state file yet), skip the backlog: mark each
-    channel's current newest post as 'already seen' so we only translate
-    genuinely NEW posts going forward, instead of flooding Google Translate
-    with dozens of requests at once and getting blocked."""
     changed = False
     for channel in SOURCE_CHANNELS:
         if state.get(channel, 0) == 0:
